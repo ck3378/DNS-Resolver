@@ -1,0 +1,3 @@
+/tests/test_resolver.py
+__pycache__/
+*.py[cod]
