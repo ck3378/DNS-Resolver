@@ -475,6 +475,7 @@ class Resolver:
             request.identifier,
             request.flags,
             edns_size if edns_size is not None else 512,
+            include_edns=edns_size is not None,
         )
 
 
@@ -487,34 +488,64 @@ def make_error_response(message: DNSMessage, rcode: int) -> bytes:
 
 
 def make_client_response(
-    packet: bytes, identifier: int, request_flags: int, max_size: int
+    packet: bytes,
+    identifier: int,
+    request_flags: int,
+    max_size: int,
+    include_edns: bool = True,
 ) -> bytes:
     message = parse_message(packet)
     data = bytearray(packet)
-    struct.pack_into("!H", data, 0, identifier)
     flags = message.flags | 0x8000 | 0x0080
     flags = (flags & ~0x0100) | (request_flags & 0x0100)
+    if not include_edns:
+        opt_records = [
+            rr for rr in message.additionals if rr.rtype == TYPE_OPT
+        ]
+        if opt_records:
+            first_opt = opt_records[0]
+            following = [
+                rr for rr in message.additionals if rr.start > first_opt.start
+            ]
+            if following:
+                data = bytearray(packet[:first_opt.start])
+                retained_additionals = sum(
+                    rr.rtype != TYPE_OPT
+                    for rr in message.additionals
+                    if rr.end <= first_opt.start
+                )
+                if any(rr.rtype != TYPE_OPT for rr in following):
+                    flags |= 0x0200
+            else:
+                data = bytearray(packet[:first_opt.start] + packet[first_opt.end:])
+                retained_additionals = sum(
+                    rr.rtype != TYPE_OPT for rr in message.additionals
+                )
+            struct.pack_into("!H", data, 10, retained_additionals)
+    struct.pack_into("!H", data, 0, identifier)
     struct.pack_into("!H", data, 2, flags)
-    if len(data) <= max_size:
-        return bytes(data)
-
-    counts = [0, 0, 0]
-    output = bytearray(packet[:message.question_end])
-    truncated = False
-    for rr in message.records:
-        if len(output) + rr.end - rr.start > max_size:
+    if len(data) > max_size:
+        message = parse_message(bytes(data))
+        flags = message.flags
+        if len(data) <= max_size:
+            return bytes(data)
+        counts = [0, 0, 0]
+        output = bytearray(data[:message.question_end])
+        truncated = False
+        for rr in message.records:
+            if len(output) + rr.end - rr.start > max_size:
+                truncated = True
+                break
+            output.extend(data[rr.start:rr.end])
+            section_index = {"answer": 0, "authority": 1, "additional": 2}[rr.section]
+            counts[section_index] += 1
+        if len(message.records) != sum(counts):
             truncated = True
-            break
-        output.extend(packet[rr.start:rr.end])
-        section_index = {"answer": 0, "authority": 1, "additional": 2}[rr.section]
-        counts[section_index] += 1
-    if len(message.records) != sum(counts):
-        truncated = True
-    output[0:2] = struct.pack("!H", identifier)
-    new_flags = flags | (0x0200 if truncated else 0)
-    output[2:4] = struct.pack("!H", new_flags)
-    output[4:12] = struct.pack("!HHHH", 1, counts[0], counts[1], counts[2])
-    return bytes(output)
+        output[0:2] = struct.pack("!H", identifier)
+        output[2:4] = struct.pack("!H", flags | (0x0200 if truncated else 0))
+        output[4:12] = struct.pack("!HHHH", 1, counts[0], counts[1], counts[2])
+        return bytes(output)
+    return bytes(data)
 
 
 def serve(port: int) -> None:
