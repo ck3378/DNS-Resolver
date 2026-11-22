@@ -10,7 +10,7 @@ zero-length EDNS(0) OPT record in upstream queries.
 ## Run
 
 ```sh
-python3 resolver.py [port]
+python3 resolver.py 10041
 ```
 
 The default port is 53. The process binds to `0.0.0.0`; run it only on a
@@ -20,7 +20,7 @@ firewall. Binding to port 53 may require elevated privileges.
 Test a query with:
 
 ```sh
-dig @127.0.0.1 -p 5300 example.com A
+dig @127.0.0.1 -p 10041 example.com A
 ```
 
 Run the protocol and cache tests with:
